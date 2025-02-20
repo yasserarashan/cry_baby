@@ -11,10 +11,10 @@ from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
 import shutil
 
-# إخفاء تحذيرات TensorFlow
+# إعدادات TensorFlow
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-# إعداد التطبيق
+# تهيئة التطبيق
 app = FastAPI()
 
 # تفعيل CORS
@@ -26,20 +26,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration
+# التهيئات الأساسية
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'caf', '3gp'}
 
-# Load ML artifacts
+# تحميل النموذج
 try:
     model = tf.keras.models.load_model('improved_model_all_end.h5')
     scaler = joblib.load('scaler_cry_all_end.pkl')
     label_encoder = joblib.load('label_encoder_all_end.pkl')
 except Exception as e:
-    raise RuntimeError(f"Failed to load model: {str(e)}")
+    raise RuntimeError(f"خطء في تحميل النموذج: {str(e)}")
 
-# Helper functions
+# الدوال المساعدة
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -56,18 +56,18 @@ def convert_to_wav(file_path: str) -> str:
                 subprocess.run(['ffmpeg', '-i', file_path, wav_path, '-y'], check=True)
                 return wav_path
             except subprocess.CalledProcessError:
-                raise HTTPException(400, detail="Conversion failed")
+                raise HTTPException(400, detail="فشل تحويل الملف إلى WAV")
     return file_path
 
 def extract_features(file_path: str, frame_duration: float = 2.0) -> np.ndarray:
     try:
         y, sr = librosa.load(file_path, mono=True)
     except Exception as e:
-        raise HTTPException(400, detail=f"Audio loading error: {str(e)}")
+        raise HTTPException(400, detail=f"خطء في تحميل الصوت: {str(e)}")
     
     frame_samples = int(frame_duration * sr)
     if len(y) < frame_samples:
-        raise HTTPException(400, detail="Audio too short")
+        raise HTTPException(400, detail="مدة الصوت قصيرة جدًا")
     
     features_list = []
     for i in range(len(y) // frame_samples):
@@ -90,8 +90,8 @@ def extract_features(file_path: str, frame_duration: float = 2.0) -> np.ndarray:
     
     return np.array(features_list)
 
-# Routes
-@app.get("/", methods=["GET", "HEAD"])
+# النقاط الطرفية
+@app.api_route("/", methods=["GET", "HEAD"])
 async def health_check():
     return {"status": "OK", "docs": "/docs"}
 
@@ -102,19 +102,19 @@ async def get_favicon():
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if not allowed_file(file.filename):
-        raise HTTPException(400, detail="Unsupported file type")
+        raise HTTPException(400, detail="نوع الملف غير مدعوم")
     
     file_path = os.path.join(UPLOAD_FOLDER, file.filename)
     try:
-        # Save uploaded file
+        # حفظ الملف
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         
-        # Process audio
+        # معالجة الصوت
         wav_path = convert_to_wav(file_path)
         features = extract_features(wav_path)
         
-        # Predict
+        # التنبؤ
         features_scaled = scaler.transform(features)
         features_scaled = np.expand_dims(features_scaled, axis=-1)
         predictions = model.predict(features_scaled)
@@ -126,7 +126,7 @@ async def predict(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(500, detail=str(e))
     finally:
-        # Cleanup files
+        # تنظيف الملفات المؤقتة
         for path in [file_path, wav_path]:
             if path and os.path.exists(path):
                 try:
@@ -137,4 +137,4 @@ async def predict(file: UploadFile = File(...)):
 if __name__ == "__main__":
     import uvicorn
     PORT = int(os.environ.get("PORT", 9000))
-    uvicorn.run(app, host="0.0.0.0", port=PORT, loop="asyncio")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
