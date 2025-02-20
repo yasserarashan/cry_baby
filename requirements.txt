@@ -5,3 +5,4 @@ librosa
 tensorflow
 joblib
 pydub
+python-multipart
