@@ -29,9 +29,9 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'caf', '3gp'}
 
 # تحميل النموذج والمعاملات
-model = tf.keras.models.load_model('improved_model.h5')
-scaler = joblib.load('scaler.pkl')
-label_encoder = joblib.load('label_encoder.pkl')
+model = tf.keras.models.load_model('improved_model_all_end.h5')
+scaler = joblib.load('scaler_cry_all_end.pkl')
+label_encoder = joblib.load('label_encoder_all_end.pkl')
 
 # التحقق من نوع الملف
 def allowed_file(filename: str) -> bool:
