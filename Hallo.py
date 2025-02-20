@@ -10,59 +10,95 @@ from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
 import shutil
 
+# إعداد التطبيق
 app = FastAPI()
 
-# CORS configuration
+# تفعيل CORS للسماح بالطلبات من الواجهة
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configuration
+# مجلد التخزين
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# أنواع الملفات المسموحة
 ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'caf', '3gp'}
-PORT = int(os.getenv("PORT", 9000))  # Get port from environment variable
 
-# Load model and preprocessing objects
-try:
-    model = tf.keras.models.load_model('improved_model_all_end.h5')
-    scaler = joblib.load('scaler_cry_all_end.pkl')
-    label_encoder = joblib.load('label_encoder_all_end.pkl')
-except Exception as e:
-    raise RuntimeError(f"Failed to load model or preprocessing objects: {str(e)}")
+# تحميل النموذج والمعاملات
+model = tf.keras.models.load_model('improved_model_all_end.h5')
+scaler = joblib.load('scaler_cry_all_end.pkl')
+label_encoder = joblib.load('label_encoder_all_end.pkl')
 
-@app.get("/")
-async def health_check():
-    return {"status": "OK", "message": "Service is running"}
-
+# التحقق من نوع الملف
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# تحويل الصوت إلى WAV إذا لزم الأمر
 def convert_to_wav(file_path: str) -> str:
-    # ... (ابقى نفس الدالة كما هي)
+    ext = file_path.split('.')[-1].lower()
+    if ext != 'wav':
+        wav_path = file_path.rsplit('.', 1)[0] + '.wav'
+        try:
+            sound = AudioSegment.from_file(file_path, format=ext)
+            sound.export(wav_path, format="wav")
+            return wav_path
+        except CouldntDecodeError:
+            try:
+                subprocess.run(['ffmpeg', '-i', file_path, wav_path, '-y'], check=True)
+                return wav_path
+            except subprocess.CalledProcessError:
+                raise HTTPException(status_code=400, detail="Error converting file to WAV")
+    return file_path
 
+# استخراج الميزات من الصوت
 def extract_features(file_path: str, frame_duration: float = 2.0) -> np.ndarray:
-    # ... (ابقى نفس الدالة كما هي)
+    try:
+        y, sr = librosa.load(file_path, mono=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error loading audio: {e}")
+    
+    frame_samples = int(frame_duration * sr)
+    num_frames = len(y) // frame_samples
+    if num_frames == 0:
+        raise HTTPException(status_code=400, detail="Audio file is too short.")
+    
+    features_list = []
+    for i in range(num_frames):
+        start, end = i * frame_samples, (i + 1) * frame_samples
+        segment = y[start:end]
+        features = [
+            np.mean(librosa.feature.chroma_stft(y=segment, sr=sr)),
+            np.mean(librosa.feature.rms(y=segment)),
+            np.mean(librosa.feature.spectral_centroid(y=segment, sr=sr)),
+            np.mean(librosa.feature.spectral_bandwidth(y=segment, sr=sr)),
+            np.mean(librosa.feature.spectral_rolloff(y=segment, sr=sr)),
+            np.mean(librosa.feature.zero_crossing_rate(y=segment))
+        ]
+        mfccs = np.mean(librosa.feature.mfcc(y=segment, sr=sr, n_mfcc=20), axis=1).tolist()
+        features.extend(mfccs)
+        features_list.append(features)
+    
+    return np.array(features_list)
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    if not allowed_file(file.filename):
+        raise HTTPException(status_code=400, detail="Unsupported file format.")
+    
+    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
     try:
-        if not allowed_file(file.filename):
-            raise HTTPException(400, detail="Unsupported file format")
-        
-        file_path = os.path.join(UPLOAD_FOLDER, file.filename)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
         wav_path = convert_to_wav(file_path)
         features = extract_features(wav_path)
-        
         if features.size == 0:
-            raise HTTPException(400, detail="Audio too short for analysis")
+            raise HTTPException(status_code=400, detail="No features extracted.")
         
         features_scaled = scaler.transform(features)
         features_scaled = np.expand_dims(features_scaled, axis=-1)
@@ -71,21 +107,19 @@ async def predict(file: UploadFile = File(...)):
         predicted_index = np.argmax(avg_prediction)
         predicted_label = label_encoder.inverse_transform([predicted_index])[0]
         
-        # Cleanup
-        for path in [file_path, wav_path]:
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except:
-                    pass
+        os.remove(file_path)
+        if wav_path != file_path:
+            os.remove(wav_path)
         
         return {"prediction": predicted_label}
-    
-    except HTTPException as he:
-        raise he
     except Exception as e:
-        raise HTTPException(500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/")
+async def health_check():
+    return {"status": "OK"}
 
 if __name__ == "__main__":
     import uvicorn
+    PORT = int(os.environ.get("PORT", 9000))
     uvicorn.run(app, host="0.0.0.0", port=PORT)
