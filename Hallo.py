@@ -84,7 +84,6 @@ def extract_features(audio_io: BytesIO, frame_duration: float = 2.0) -> np.ndarr
 async def health_check():
     return {"status": "OK", "docs": "/docs"}
 
-# نقطة نهاية التنبؤ
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if not allowed_file(file.filename):
@@ -96,12 +95,27 @@ async def predict(file: UploadFile = File(...)):
         wav_io = convert_to_wav(audio_bytes, ext)
         features = extract_features(wav_io)
         
+        # تطبيع الميزات
         features_scaled = scaler.transform(features)
         features_scaled = np.expand_dims(features_scaled, axis=-1)
-        predictions = model.predict(features_scaled)
-        predicted_label = label_encoder.inverse_transform([np.argmax(np.mean(predictions, axis=0))])[0]
         
-        return {"prediction": predicted_label}
+        # إجراء التوقع باستخدام النموذج
+        predictions = model.predict(features_scaled)
+        
+        # حساب متوسط الاحتمالات لكل فئة عبر جميع الإطارات
+        avg_prediction = np.mean(predictions, axis=0)
+        
+        # الحصول على الفئة ذات أعلى احتمال
+        predicted_index = np.argmax(avg_prediction)
+        predicted_label = label_encoder.inverse_transform([predicted_index])[0]
+        
+        # إرجاع النتيجة
+        probabilities = {label_encoder.inverse_transform([i])[0]: float(prob) for i, prob in enumerate(avg_prediction)}
+        
+        return {
+            "prediction": predicted_label,
+            "probabilities": probabilities
+        }
     except HTTPException as he:
         raise he
     except Exception as e:
