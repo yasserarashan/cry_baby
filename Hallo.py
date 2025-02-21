@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydub import AudioSegment
 from io import BytesIO
 import tensorflow as tf
+import numpy as np
+import librosa
 
 # تحميل النموذج عند بدء التشغيل
 MODEL_PATH = "improved_model_all_end.h5"
@@ -38,23 +40,44 @@ def convert_to_wav(audio_bytes: bytes, ext: str) -> BytesIO:
     except Exception:
         raise HTTPException(status_code=400, detail="فشل تحويل الملف إلى WAV")
 
-# نقطة فحص الخدمة تُظهر أن النموذج تم تحميله
+# دالة لاستخراج الميزات من الصوت (مثال بسيط على استخراج الميزات من أول 2 ثانية)
+def extract_features(audio_io: BytesIO, frame_duration: float = 2.0):
+    try:
+        y, sr = librosa.load(audio_io, mono=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"خطأ في تحميل الصوت: {e}")
+    
+    frame_samples = int(frame_duration * sr)
+    if len(y) < frame_samples:
+        raise HTTPException(status_code=400, detail="ملف الصوت قصير جدًا")
+    
+    segment = y[:frame_samples]
+    features = {
+        "chroma_stft": float(np.mean(librosa.feature.chroma_stft(y=segment, sr=sr))),
+        "rms": float(np.mean(librosa.feature.rms(y=segment))),
+        "spectral_centroid": float(np.mean(librosa.feature.spectral_centroid(y=segment, sr=sr))),
+        "spectral_bandwidth": float(np.mean(librosa.feature.spectral_bandwidth(y=segment, sr=sr))),
+        "spectral_rolloff": float(np.mean(librosa.feature.spectral_rolloff(y=segment, sr=sr))),
+        "zero_crossing_rate": float(np.mean(librosa.feature.zero_crossing_rate(y=segment)))
+    }
+    return features
+
 @app.get("/")
 def health_check():
     return {"message": "تم تحميل النموذج"}
 
-# نقطة رفع الملف التي تحول الصوت إلى WAV
-@app.post("/upload")
-async def upload_audio(file: UploadFile = File(...)):
+# نقطة رفع الملف التي تقوم بتحويل الصوت إلى WAV واستخراج الميزات
+@app.post("/extract")
+async def extract_audio_features(file: UploadFile = File(...)):
     if not allowed_file(file.filename):
-        raise HTTPException(status_code=400, detail="نوع الملف غير مدعوم")
+         raise HTTPException(status_code=400, detail="نوع الملف غير مدعوم")
     
     ext = file.filename.rsplit('.', 1)[1].lower()
     audio_bytes = await file.read()
     wav_audio = convert_to_wav(audio_bytes, ext)
     
-    # يمكنك استخدام wav_audio في عمليات أخرى إذا رغبت
-    return {"message": "تم تحويل الصوت وتم تحميل النموذج"}
+    features = extract_features(wav_audio)
+    return {"message": "تم استخراج الميزات", "features": features}
 
 if __name__ == "__main__":
     import uvicorn
