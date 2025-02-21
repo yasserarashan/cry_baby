@@ -10,6 +10,17 @@ from pydub.exceptions import CouldntDecodeError
 from io import BytesIO
 import tempfile
 import subprocess
+import os
+import numpy as np
+import librosa
+import tensorflow as tf
+import joblib
+import subprocess
+from io import BytesIO
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydub import AudioSegment
+from pydub.exceptions import CouldntDecodeError
 
 # إعدادات المسارات الخاصة بالملفات المطلوبة
 MODEL_PATH = "improved_model_all_end.h5"
