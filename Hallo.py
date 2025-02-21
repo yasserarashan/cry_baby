@@ -1,6 +1,8 @@
 import os
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydub import AudioSegment
+from io import BytesIO
 
 # إعدادات التطبيق
 app = FastAPI()
@@ -20,6 +22,16 @@ ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'caf', '3gp'}
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def convert_to_wav(audio_bytes: bytes, ext: str) -> BytesIO:
+    try:
+        audio = AudioSegment.from_file(BytesIO(audio_bytes), format=ext)
+        wav_io = BytesIO()
+        audio.export(wav_io, format="wav")
+        wav_io.seek(0)
+        return wav_io
+    except Exception:
+        raise HTTPException(400, detail="فشل تحويل الملف إلى WAV")
+
 @app.get("/")
 async def health_check():
     return {"status": "OK", "docs": "/docs"}
@@ -29,7 +41,11 @@ async def upload_audio(file: UploadFile = File(...)):
     if not allowed_file(file.filename):
         raise HTTPException(400, detail="نوع الملف غير مدعوم")
     
-    return {"message": "تم الاتصال بالسيرفر بنجاح"}
+    ext = file.filename.rsplit('.', 1)[-1].lower()
+    audio_bytes = await file.read()
+    wav_io = convert_to_wav(audio_bytes, ext)
+    
+    return {"message": "تم الاتصال بالسيرفر وتم تحويل الملف إلى WAV بنجاح"}
 
 # تشغيل التطبيق
 if __name__ == "__main__":
