@@ -1,17 +1,16 @@
 import os
 import numpy as np
 import librosa
-import subprocess
+import io
+import tensorflow as tf
+import joblib
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import tensorflow as tf
-import joblib
 from pydub import AudioSegment
 from pydub.exceptions import CouldntDecodeError
-import shutil
 
-# إعدادات TensorFlow
+# إعداد TensorFlow
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # تهيئة التطبيق
@@ -26,49 +25,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# التهيئات الأساسية
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'caf', '3gp'}
-
 # تحميل النموذج
 try:
+    print("🔄 جاري تحميل النموذج والملفات المساعدة...")
     model = tf.keras.models.load_model('improved_model_all_end.h5')
+    model.compile()  # إصلاح مشكلة compile_metrics
     scaler = joblib.load('scaler_cry_all_end.pkl')
     label_encoder = joblib.load('label_encoder_all_end.pkl')
+    print("✅ تم تحميل النموذج بنجاح!")
 except Exception as e:
-    raise RuntimeError(f"خطء في تحميل النموذج: {str(e)}")
+    raise RuntimeError(f"❌ خطأ في تحميل النموذج: {str(e)}")
 
-# الدوال المساعدة
+# قائمة الامتدادات المدعومة
+ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'caf', '3gp'}
+
 def allowed_file(filename: str) -> bool:
+    """التحقق من نوع الملف"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def convert_to_wav(file_path: str) -> str:
-    ext = file_path.split('.')[-1].lower()
-    if ext != 'wav':
-        wav_path = file_path.rsplit('.', 1)[0] + '.wav'
-        try:
-            sound = AudioSegment.from_file(file_path, format=ext)
-            sound.export(wav_path, format="wav")
-            return wav_path
-        except CouldntDecodeError:
-            try:
-                subprocess.run(['ffmpeg', '-i', file_path, wav_path, '-y'], check=True)
-                return wav_path
-            except subprocess.CalledProcessError:
-                raise HTTPException(400, detail="فشل تحويل الملف إلى WAV")
-    return file_path
-
-def extract_features(file_path: str, frame_duration: float = 2.0) -> np.ndarray:
+def convert_to_wav(file_bytes: bytes, file_ext: str) -> np.ndarray:
+    """تحويل الصوت إلى WAV وتحميله في Librosa مباشرة"""
     try:
-        y, sr = librosa.load(file_path, mono=True)
+        # تحويل الصوت إلى صيغة مناسبة باستخدام `pydub`
+        audio = AudioSegment.from_file(io.BytesIO(file_bytes), format=file_ext)
+        wav_io = io.BytesIO()
+        audio.export(wav_io, format="wav")
+        wav_io.seek(0)
+        
+        # تحميل الصوت باستخدام Librosa
+        y, sr = librosa.load(wav_io, mono=True)
+        return y, sr
+    except CouldntDecodeError:
+        raise HTTPException(400, detail="❌ فشل تحليل الملف الصوتي")
     except Exception as e:
-        raise HTTPException(400, detail=f"خطء في تحميل الصوت: {str(e)}")
-    
+        raise HTTPException(400, detail=f"❌ خطأ في تحويل الصوت: {str(e)}")
+
+def extract_features(y: np.ndarray, sr: int, frame_duration: float = 2.0) -> np.ndarray:
+    """استخراج الميزات الصوتية من البيانات"""
     frame_samples = int(frame_duration * sr)
     if len(y) < frame_samples:
-        raise HTTPException(400, detail="مدة الصوت قصيرة جدًا")
-    
+        raise HTTPException(400, detail="❌ مدة الصوت قصيرة جدًا")
+
     features_list = []
     for i in range(len(y) // frame_samples):
         start = i * frame_samples
@@ -90,7 +87,6 @@ def extract_features(file_path: str, frame_duration: float = 2.0) -> np.ndarray:
     
     return np.array(features_list)
 
-# النقاط الطرفية
 @app.api_route("/", methods=["GET", "HEAD"])
 async def health_check():
     return {"status": "OK", "docs": "/docs"}
@@ -101,38 +97,32 @@ async def get_favicon():
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    """استقبال ملف صوتي وإجراء التنبؤ"""
     if not allowed_file(file.filename):
-        raise HTTPException(400, detail="نوع الملف غير مدعوم")
-    
-    file_path = os.path.join(UPLOAD_FOLDER, file.filename)
+        raise HTTPException(400, detail="❌ نوع الملف غير مدعوم")
+
     try:
-        # حفظ الملف
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        # معالجة الصوت
-        wav_path = convert_to_wav(file_path)
-        features = extract_features(wav_path)
-        
-        # التنبؤ
+        # قراءة الملف في الذاكرة
+        file_bytes = await file.read()
+        file_ext = file.filename.rsplit('.', 1)[1].lower()
+
+        # تحويل الصوت إلى WAV وتحميله
+        y, sr = convert_to_wav(file_bytes, file_ext)
+
+        # استخراج الميزات
+        features = extract_features(y, sr)
+
+        # إجراء التنبؤ
         features_scaled = scaler.transform(features)
         features_scaled = np.expand_dims(features_scaled, axis=-1)
         predictions = model.predict(features_scaled)
         predicted_label = label_encoder.inverse_transform([np.argmax(np.mean(predictions, axis=0))])[0]
-        
+
         return {"prediction": predicted_label}
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(500, detail=str(e))
-    finally:
-        # تنظيف الملفات المؤقتة
-        for path in [file_path, wav_path]:
-            if path and os.path.exists(path):
-                try:
-                    os.remove(path)
-                except:
-                    pass
+        raise HTTPException(500, detail=f"❌ خطأ داخلي: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
